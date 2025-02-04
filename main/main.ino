@@ -1,11 +1,14 @@
 #include <WiFi.h>
 #include <WebServer.h>
+#include <WebSocketsServer.h>
 #include <DHT22.h>
 #include <PMserial.h>
 
-#define dhtPIN 22
-#define pmTXPIN 17
-#define pmRXPIN 16
+#define dhtPIN 23
+#define pmTXPIN 18
+#define pmRXPIN 5
+#define YL83_ANALOG_PIN 15
+#define YL83_DIGITAL_PIN 2
 
 const char* ssid = "ESP32-AP";
 const char* password = "12345678";
@@ -14,6 +17,7 @@ DHT22 dht22(dhtPIN);
 SerialPM pms(PMSx003, pmRXPIN, pmTXPIN);
 
 WebServer server(80);
+WebSocketsServer webSocket = WebSocketsServer(81);
 
 const int maxDataPoints = 50;
 float tempHistory[maxDataPoints];
@@ -21,11 +25,15 @@ float humHistory[maxDataPoints];
 float pm1History[maxDataPoints];
 float pm25History[maxDataPoints];
 float pm10History[maxDataPoints];
+float rainHistory[maxDataPoints];
 int dataIndex = 0;
 
 void setup() {
   Serial.begin(9600);
   pms.init();
+
+  pinMode(YL83_ANALOG_PIN, INPUT);
+  pinMode(YL83_DIGITAL_PIN, INPUT);
 
   WiFi.softAP(ssid, password);
   Serial.println("Access Point Started");
@@ -33,12 +41,18 @@ void setup() {
   server.on("/", handleRoot);
   server.on("/data", handleData);
   server.on("/history", handleHistory);
+  server.on("/error", handleError);
+
   server.begin();
   Serial.println("HTTP server started");
+
+  webSocket.begin();
+  webSocket.onEvent(webSocketEvent);
 }
 
 void loop() {
   server.handleClient();
+  webSocket.loop();
 }
 
 void handleRoot() {
@@ -86,6 +100,7 @@ void handleRoot() {
             align-items: center;
             margin: 10px;
             transition: background-color 0.3s;
+            text-align: center;
         }
         .tile.good {
             background-color: #4caf50;
@@ -190,6 +205,10 @@ void handleRoot() {
                 <span id="pm10Value"></span>
                 <p>PM10</p>
             </div>
+            <div class="tile" id="rainTile">
+                <span id="rainValue"></span>
+                <p>Deszcz</p>
+            </div>
         </div>
         <div id="qualityIndicator">
             <div id="pointer"></div>
@@ -214,6 +233,11 @@ void handleRoot() {
             <div class="chartTitle">PM10</div>
             <canvas id="pm10Chart" width="1000" height="400"></canvas>
         </div>
+        <div class="chartContainer">
+            <div class="chartTitle">Deszcz</div>
+            <canvas id="rainChart" width="1000" height="400"></canvas>
+        </div>
+        <button onclick='testAlert()'>Test Alert</button>
     </div>
     <script>
         var tempData = [];
@@ -221,6 +245,7 @@ void handleRoot() {
         var pm1Data = [];
         var pm25Data = [];
         var pm10Data = [];
+        var rainData = [];
 
         function drawChart(canvasId, data, color, label, yMin, yMax) {
             var canvas = document.getElementById(canvasId);
@@ -292,6 +317,8 @@ void handleRoot() {
                 case 'PM2.5':
                 case 'PM10':
                     return ' µg/m³';
+                case 'Deszcz':
+                    return ' %';
                 default:
                     return '';
             }
@@ -304,12 +331,14 @@ void handleRoot() {
                 document.getElementById('pm1Value').innerText = data.pm1 + ' µg/m³';
                 document.getElementById('pm25Value').innerText = data.pm25 + ' µg/m³';
                 document.getElementById('pm10Value').innerText = data.pm10 + ' µg/m³';
+                document.getElementById('rainValue').innerText = data.rainDigital ? 'Brak deszczu' : 'Deszcz';
 
                 updateTileColor('tempTile', data.temperature);
                 updateTileColor('humTile', data.humidity);
                 updateTileColor('pm1Tile', data.pm1);
                 updateTileColor('pm25Tile', data.pm25);
                 updateTileColor('pm10Tile', data.pm10);
+                updateTileColor('rainTile', data.rainDigital ? 0 : 100);
 
                 if (tempData.length >= 50) {
                     tempData.shift();
@@ -317,6 +346,7 @@ void handleRoot() {
                     pm1Data.shift();
                     pm25Data.shift();
                     pm10Data.shift();
+                    rainData.shift();
                 }
 
                 tempData.push(data.temperature);
@@ -324,12 +354,14 @@ void handleRoot() {
                 pm1Data.push(data.pm1);
                 pm25Data.push(data.pm25);
                 pm10Data.push(data.pm10);
+                rainData.push(data.rainAnalog);
 
                 drawChart('tempChart', tempData, 'red', 'Temperatura', Math.min(...tempData) - 5, Math.max(...tempData) + 5);
                 drawChart('humChart', humData, 'blue', 'Wilgotność', 0, 100);
                 drawChart('pm1Chart', pm1Data, 'green', 'PM1.0', 0, Math.max(...pm1Data) + 5);
                 drawChart('pm25Chart', pm25Data, 'orange', 'PM2.5', 0, Math.max(...pm25Data) + 5);
                 drawChart('pm10Chart', pm10Data, 'purple', 'PM10', 0, Math.max(...pm10Data) + 5);
+                drawChart('rainChart', rainData, 'blue', 'Deszcz', 0, 100);
 
                 updatePointer(data.pm25);
             });
@@ -359,13 +391,22 @@ void handleRoot() {
                 pm1Data = history.pm1History;
                 pm25Data = history.pm25History;
                 pm10Data = history.pm10History;
+                rainData = history.rainHistory;
 
                 drawChart('tempChart', tempData, 'red', 'Temperatura', Math.min(...tempData) - 5, Math.max(...tempData) + 5);
                 drawChart('humChart', humData, 'blue', 'Wilgotność', 0, 100);
                 drawChart('pm1Chart', pm1Data, 'green', 'PM1.0', 0, Math.max(...pm1Data) + 5);
                 drawChart('pm25Chart', pm25Data, 'orange', 'PM2.5', 0, Math.max(...pm25Data) + 5);
                 drawChart('pm10Chart', pm10Data, 'purple', 'PM10', 0, Math.max(...pm10Data) + 5);
+                drawChart('rainChart', rainData, 'blue', 'Deszcz', 0, 100);
             });
+        }
+
+        function testAlert() {
+            var ws = new WebSocket('ws://' + window.location.hostname + ':81/');
+            ws.onopen = function() {
+                ws.send('testAlert');
+            };
         }
 
         setInterval(updateData, 5000);
@@ -374,7 +415,6 @@ void handleRoot() {
 </body>
 </html>
 )";
-
   server.send(200, "text/html", html);
 }
 
@@ -382,6 +422,8 @@ void handleData() {
   float t = dht22.getTemperature();
   float h = dht22.getHumidity();
   pms.read();
+  int rainAnalog = analogRead(YL83_ANALOG_PIN);
+  int rainDigital = digitalRead(YL83_DIGITAL_PIN);
 
   if (dataIndex >= maxDataPoints) {
     for (int i = 1; i < maxDataPoints; i++) {
@@ -390,6 +432,7 @@ void handleData() {
       pm1History[i - 1] = pm1History[i];
       pm25History[i - 1] = pm25History[i];
       pm10History[i - 1] = pm10History[i];
+      rainHistory[i - 1] = rainHistory[i];
     }
     dataIndex = maxDataPoints - 1;
   }
@@ -399,6 +442,7 @@ void handleData() {
   pm1History[dataIndex] = pms.pm01;
   pm25History[dataIndex] = pms.pm25;
   pm10History[dataIndex] = pms.pm10;
+  rainHistory[dataIndex] = rainAnalog;
   dataIndex++;
 
   String json = "{";
@@ -406,7 +450,9 @@ void handleData() {
   json += "\"humidity\":" + String(h) + ",";
   json += "\"pm1\":" + String(pms.pm01) + ",";
   json += "\"pm25\":" + String(pms.pm25) + ",";
-  json += "\"pm10\":" + String(pms.pm10);
+  json += "\"pm10\":" + String(pms.pm10) + ",";
+  json += "\"rainAnalog\":" + String(rainAnalog) + ",";
+  json += "\"rainDigital\":" + String(rainDigital);
   json += "}";
 
   server.send(200, "application/json", json);
@@ -418,7 +464,8 @@ void handleHistory() {
   json += "\"humHistory\":[" + joinArray(humHistory, dataIndex) + "],";
   json += "\"pm1History\":[" + joinArray(pm1History, dataIndex) + "],";
   json += "\"pm25History\":[" + joinArray(pm25History, dataIndex) + "],";
-  json += "\"pm10History\":[" + joinArray(pm10History, dataIndex) + "]";
+  json += "\"pm10History\":[" + joinArray(pm10History, dataIndex) + "],";
+  json += "\"rainHistory\":[" + joinArray(rainHistory, dataIndex) + "]";
   json += "}";
 
   server.send(200, "application/json", json);
@@ -431,4 +478,17 @@ String joinArray(float* array, int length) {
     result += String(array[i]);
   }
   return result;
+}
+
+void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
+  if (type == WStype_TEXT) {
+    if (strcmp((char*)payload, "testAlert") == 0) {
+      webSocket.broadcastTXT("Alert: Test alert triggered!");
+    }
+  }
+}
+
+void handleTestAlert() {
+  webSocket.broadcastTXT("Alert: Test alert triggered!");
+  server.send(200, "text/plain", "Test alert sent");
 }

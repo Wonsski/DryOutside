@@ -1,5 +1,5 @@
 #include <PMserial.h>
-SerialPM pms(PMSx003, 16, 17);  // PMSx003, RX, TX
+SerialPM pms(PMSx003, 5, 18);  // PMSx003, RX, TX
 
 void setup() {
   Serial.begin(9600);

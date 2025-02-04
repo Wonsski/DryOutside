@@ -1,6 +1,6 @@
 #include <DHT22.h>
 //define pin data
-#define pinDATA 22 // SDA, or almost any other I/O pin
+#define pinDATA 23 // SDA, or almost any other I/O pin
 
 DHT22 dht22(pinDATA); 
  
